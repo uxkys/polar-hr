@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <title>Polar Verity Sense Heart Rate Monitor</title>
+</head>
+<body>
+  <h1>Polar Verity Sense Heart Rate Monitor</h1>
+  <!-- 接続ボタン -->
+  <button id="connectButton">Connect to Polar Verity Sense</button>
+  
+  <!-- 心拍数表示箇所 -->
+  <p>Heart Rate: <span id="heartRateValue">--</span> bpm</p>
+
+  <script>
+    // ボタン要素を取得
+    const connectButton = document.getElementById('connectButton');
+    const heartRateValueSpan = document.getElementById('heartRateValue');
+
+    // 接続ボタンがクリックされた時の処理
+    connectButton.addEventListener('click', () => {
+      // Bluetoothデバイスを選択
+      navigator.bluetooth.requestDevice({
+        filters: [{ services: ['heart_rate'] }] // Heart Rate Service (0x180D)
+      })
+      .then(device => {
+        console.log('デバイスを選択:', device.name);
+        // GATT サーバーに接続
+        return device.gatt.connect();
+      })
+      .then(server => {
+        console.log('GATTサーバーに接続成功');
+        // heart_rate サービスを取得
+        return server.getPrimaryService('heart_rate');
+      })
+      .then(service => {
+        console.log('heart_rate サービスを取得');
+        // heart_rate_measurement キャラクタリスティックを取得
+        return service.getCharacteristic('heart_rate_measurement');
+      })
+      .then(characteristic => {
+        console.log('heart_rate_measurement キャラクタリスティックを取得');
+        // 通知(Notifications)を開始
+        return characteristic.startNotifications().then(() => {
+          // イベントリスナーを設定
+          characteristic.addEventListener('characteristicvaluechanged', handleHeartRateMeasurement);
+          console.log('通知が開始されました');
+        });
+      })
+      .catch(error => {
+        console.error('エラー:', error);
+      });
+    });
+
+    // 心拍数を読み取る処理
+    function handleHeartRateMeasurement(event) {
+      const value = event.target.value;
+      // 1バイト目: flags
+      const flags = value.getUint8(0);
+      let heartRate;
+      let index = 1;
+
+      // flagsの最下位ビットが 1 の場合、心拍数は16ビット。それ以外は8ビット
+      const is16Bits = flags & 0x01;
+      if (is16Bits) {
+        heartRate = value.getUint16(index, /* littleEndinan= */true);
+        index += 2;
+      } else {
+        heartRate = value.getUint8(index);
+        index += 1;
+      }
+
+      // 画面に表示
+      heartRateValueSpan.textContent = heartRate;
+      console.log('現在の心拍数:', heartRate);
+    }
+  </script>
+</body>
+</html>
