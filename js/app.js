@@ -1,72 +1,84 @@
-// app.js
+// js/app.js
 
-// React/ChakraUIのimport（グローバルスクリプト読み込みの場合、window.chakra として参照できます）
-const { 
-  ChakraProvider, 
-  Box, 
-  Button, 
-  Heading, 
-  Text, 
-  Input, 
-  HStack, 
-  VStack 
+// Chakra UI (window.chakra) から必要なコンポーネントを取得
+const {
+  ChakraProvider,
+  Box,
+  Heading,
+  Text,
+  Input,
+  Button,
+  HStack,
+  VStack
 } = window.chakra;
-const { useState, useEffect, useRef } = React; // React 18
 
+// React用のフック
+const { useState, useRef } = React;
+
+/**
+ * メインのReactコンポーネント
+ */
 function App() {
-  // ==== State 管理 ====
-  const [device, setDevice] = useState(null);
+  // --------------------------------------
+  // StateやRefの準備
+  // --------------------------------------
+  const [statusMsg, setStatusMsg] = useState("");
+
+  // デバイス接続状態
+  const [isConnected, setIsConnected] = useState(false);
   const [characteristic, setCharacteristic] = useState(null);
 
-  const [statusMsg, setStatusMsg] = useState("");
-  const [isConnected, setIsConnected] = useState(false);
-
-  // ベースライン関連
-  const [measureMinutes, setMeasureMinutes] = useState(5);  // 計測する分数(初期値5)
+  // ベースライン計測の設定
+  const [measureMinutes, setMeasureMinutes] = useState(5); // 計測時間(分)
   const [isMeasuringBaseline, setIsMeasuringBaseline] = useState(false);
   const [baselineFinished, setBaselineFinished] = useState(false);
   const baselineTimerRef = useRef(null);
 
   // ベースライン計測結果
-  const [baselineSDNN, setBaselineSDNN] = useState(null);
-  const [baselineRMSSD, setBaselineRMSSD] = useState(null);
+  const [baselineSDNN, setBaselineSDNN] = useState("--");
+  const [baselineRMSSD, setBaselineRMSSD] = useState("--");
 
-  // リアルタイム表示用
-  const [currentHR, setCurrentHR] = useState("--"); // 最新の心拍数
+  // リアルタイム表示
+  const [currentHR, setCurrentHR] = useState("--");
   const [currentSDNN, setCurrentSDNN] = useState("--");
   const [currentRMSSD, setCurrentRMSSD] = useState("--");
 
-  // RR間隔を保持するための配列
-  // baseline中は baselineRRs に格納, baseline終了後は afterBaselineRRs に格納
-  const baselineRRs = useRef([]);     
-  const afterBaselineRRs = useRef([]); 
+  // RR間隔を格納する配列 (ベースライン中 / ベースライン後)
+  const baselineRRs = useRef([]);
+  const afterBaselineRRs = useRef([]);
 
-  // ==== Polarデバイスに接続 ====
-  const handleConnect = async () => {
+  // --------------------------------------
+  // Polar接続
+  // --------------------------------------
+  async function handleConnect() {
     try {
       setStatusMsg("デバイスをスキャンしています...");
-      const dev = await navigator.bluetooth.requestDevice({
+      const device = await navigator.bluetooth.requestDevice({
         filters: [{ services: ["heart_rate"] }]
       });
-      setDevice(dev);
       setStatusMsg("接続中...");
-      const server = await dev.gatt.connect();
+
+      const server = await device.gatt.connect();
       const service = await server.getPrimaryService("heart_rate");
       const char = await service.getCharacteristic("heart_rate_measurement");
+
+      // Notificationsを有効にして、イベントを受け取る
       await char.startNotifications();
       char.addEventListener("characteristicvaluechanged", handleCharacteristicValueChanged);
 
       setCharacteristic(char);
       setIsConnected(true);
       setStatusMsg("デバイスと接続しました。ベースライン計測を開始できます。");
-    } catch (error) {
-      console.error(error);
-      setStatusMsg("接続エラー: " + error);
+    } catch (err) {
+      console.error(err);
+      setStatusMsg("接続エラー: " + err);
     }
-  };
+  }
 
-  // ==== ベースライン計測開始 ====
-  const handleStartBaseline = () => {
+  // --------------------------------------
+  // ベースライン計測開始
+  // --------------------------------------
+  function handleStartBaseline() {
     if (!characteristic) {
       alert("先にデバイスと接続してください。");
       return;
@@ -75,48 +87,55 @@ function App() {
       alert("ベースライン計測時間は1以上を指定してください。");
       return;
     }
+
     // 状態リセット
     baselineRRs.current = [];
     afterBaselineRRs.current = [];
-    setBaselineSDNN(null);
-    setBaselineRMSSD(null);
+    setBaselineSDNN("--");
+    setBaselineRMSSD("--");
     setBaselineFinished(false);
 
     setIsMeasuringBaseline(true);
     setStatusMsg(`ベースライン計測中...（${measureMinutes}分）`);
 
-    // タイマーをセット
+    // タイマーを設定
     if (baselineTimerRef.current) {
       clearTimeout(baselineTimerRef.current);
     }
     baselineTimerRef.current = setTimeout(() => {
       finishBaseline();
     }, measureMinutes * 60 * 1000);
-  };
+  }
 
-  // ==== ベースライン計測終了処理 ====
-  const finishBaseline = () => {
+  // --------------------------------------
+  // ベースライン計測終了
+  // --------------------------------------
+  function finishBaseline() {
     setIsMeasuringBaseline(false);
     setBaselineFinished(true);
     setStatusMsg("ベースライン計測が終了しました。結果を計算します...");
 
-    // RR配列から計算
+    // ベースラインのRR配列からSDNN/RMSSDを計算
     const { sdnn, rmssd } = calcTimeDomainMetrics(baselineRRs.current);
     setBaselineSDNN(sdnn.toFixed(2));
     setBaselineRMSSD(rmssd.toFixed(2));
 
-    setStatusMsg("ベースライン計測完了。以後もリアルタイムでSDNN/RMSSDを計算します。");
-  };
+    setStatusMsg(
+      "ベースライン計測完了。以後もリアルタイムでSDNN/RMSSDを更新します。"
+    );
+  }
 
-  // ==== Characteristic値変更(新たな心拍)が届いたとき ====
-  const handleCharacteristicValueChanged = (event) => {
+  // --------------------------------------
+  // Heart Rate Measurement の通知受信時
+  // --------------------------------------
+  function handleCharacteristicValueChanged(event) {
     const value = event.target.value;
     const flags = value.getUint8(0);
     let index = 1;
 
-    // 心拍数が8bit or 16bitか
+    // 心拍数（8 or 16bit）
     const is16Bits = flags & 0x01;
-    let heartRate;
+    let heartRate = 0;
     if (is16Bits) {
       heartRate = value.getUint16(index, true);
       index += 2;
@@ -126,60 +145,57 @@ function App() {
     }
     setCurrentHR(heartRate);
 
-    // RR間隔が含まれているか (bit4)
+    // RR間隔フラグ (bit4)
     const rrIncluded = flags & 0x10;
     if (rrIncluded) {
       while (index + 1 < value.byteLength) {
         const rrValue = value.getUint16(index, true);
         index += 2;
-        // RRは1/1024秒単位 → ミリ秒へ近似変換
+        // 1/1024秒単位 → ミリ秒
         const rrMs = rrValue * (1000 / 1024);
 
         if (isMeasuringBaseline) {
           baselineRRs.current.push(rrMs);
         } else {
-          // ベースライン終了後は こちらに格納
           afterBaselineRRs.current.push(rrMs);
         }
       }
     }
-    // 毎回リアルタイムでSDNN/RMSSDを計算・更新
-    updateRealTimeHRV();
-  };
 
-  // ==== リアルタイムでSDNN/RMSSDを計算・表示 ====
-  const updateRealTimeHRV = () => {
-    // ベースライン中はまだリアルタイム表示しなくてもOKですが、
-    // ベースライン計測中も見たい場合は、baselineRRs.currentで計算するのもアリ
-    let targetRRs = afterBaselineRRs.current;
-
-    // ベースラインが終わっていなければ計算しない
-    if (!baselineFinished) {
-      // 「まだベースライン中なのでリアルタイムは--のままにする」か、
-      // 「baselineRRsで計算する」かは好みで調整してください。
-      return;
+    // ベースライン終了後ならリアルタイムでSDNN/RMSSDを計算
+    if (baselineFinished) {
+      updateRealTimeMetrics();
     }
+  }
 
-    if (targetRRs.length < 2) {
+  // --------------------------------------
+  // リアルタイムでSDNN/RMSSDを計算・更新
+  // --------------------------------------
+  function updateRealTimeMetrics() {
+    const arr = afterBaselineRRs.current;
+    if (arr.length < 2) {
       setCurrentSDNN("--");
       setCurrentRMSSD("--");
       return;
     }
-
-    const { sdnn, rmssd } = calcTimeDomainMetrics(targetRRs);
+    const { sdnn, rmssd } = calcTimeDomainMetrics(arr);
     setCurrentSDNN(sdnn.toFixed(2));
     setCurrentRMSSD(rmssd.toFixed(2));
-  };
+  }
 
-  // ==== SDNN, RMSSDを計算するユーティリティ関数 ====
+  // --------------------------------------
+  // SDNN, RMSSDを計算するユーティリティ
+  // --------------------------------------
   function calcTimeDomainMetrics(rrArray) {
     if (rrArray.length < 2) {
       return { sdnn: 0, rmssd: 0 };
     }
-    // 平均RR
+    // 平均
     const meanRR = rrArray.reduce((a, b) => a + b, 0) / rrArray.length;
+
     // 分散 → SDNN
-    const variance = rrArray.reduce((acc, val) => acc + Math.pow(val - meanRR, 2), 0) / rrArray.length;
+    const variance =
+      rrArray.reduce((acc, val) => acc + (val - meanRR) ** 2, 0) / rrArray.length;
     const sdnn = Math.sqrt(variance);
 
     // RMSSD
@@ -194,12 +210,14 @@ function App() {
     return { sdnn, rmssd };
   }
 
-  // ==== UI ====
+  // --------------------------------------
+  // UIを描画（Chakra UIのコンポーネントを使用）
+  // --------------------------------------
   return (
     <Box p={4}>
       <Heading mb={4}>Polar Verity Sense HRV Demo</Heading>
 
-      {/* 1) デバイス接続 */}
+      {/* デバイス接続ボタン */}
       <Button 
         colorScheme="blue" 
         onClick={handleConnect} 
@@ -209,18 +227,18 @@ function App() {
         1. デバイスと接続
       </Button>
 
-      {/* 2) ベースライン計測 */}
+      {/* ベースライン計測設定 */}
       <HStack mb={4}>
         <Text>ベースライン計測時間(分):</Text>
-        <Input 
+        <Input
           type="number"
           width="80px"
           value={measureMinutes}
           onChange={(e) => setMeasureMinutes(Number(e.target.value))}
         />
-        <Button 
-          colorScheme="green" 
-          onClick={handleStartBaseline} 
+        <Button
+          colorScheme="green"
+          onClick={handleStartBaseline}
           isDisabled={!isConnected}
         >
           ベースライン計測スタート
@@ -230,18 +248,18 @@ function App() {
       {/* ステータスメッセージ */}
       <Text mb={4}>{statusMsg}</Text>
 
-      {/* ベースライン結果 */}
+      {/* ベースライン計測結果 */}
       {baselineFinished && (
-        <Box mb={8} p={4} borderWidth="1px" borderRadius="md">
+        <Box p={4} borderWidth="1px" borderRadius="md" mb={8}>
           <Heading size="md" mb={2}>ベースライン計測結果</Heading>
-          <Text>SDNN: {baselineSDNN || "--"} ms</Text>
-          <Text>RMSSD: {baselineRMSSD || "--"} ms</Text>
+          <Text>SDNN: {baselineSDNN} ms</Text>
+          <Text>RMSSD: {baselineRMSSD} ms</Text>
         </Box>
       )}
 
       {/* リアルタイム表示 */}
       <Box p={4} borderWidth="1px" borderRadius="md">
-        <Heading size="md" mb={2}>リアルタイム計測</Heading>
+        <Heading size="md" mb={2}>リアルタイム表示</Heading>
         <VStack align="start">
           <Text>Heart Rate: {currentHR} bpm</Text>
           <Text>SDNN: {currentSDNN} ms</Text>
@@ -252,14 +270,15 @@ function App() {
   );
 }
 
-// ルートにReactアプリをレンダリング
+// ルートをレンダリング
 function Main() {
   return (
-    <ChakraProvider>
+    <window.chakra.ChakraProvider>
       <App />
-    </ChakraProvider>
+    </window.chakra.ChakraProvider>
   );
 }
 
+// React 18+ の新しいレンダリングAPI
 const rootElement = document.getElementById("root");
 ReactDOM.createRoot(rootElement).render(<Main />);
