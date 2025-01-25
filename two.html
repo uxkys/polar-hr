@@ -2,107 +2,120 @@
 <html lang="ja">
 <head>
   <meta charset="UTF-8" />
-  <title>Polar Verity Sense Heart Rate Monitor</title>
+  <title>Polar H10 HRV Monitor</title>
   <style>
     body {
       font-family: sans-serif;
       margin: 20px;
     }
-    #logTable {
+    button {
+      margin: 5px;
+      padding: 10px 20px;
+      font-size: 16px;
+    }
+    #dataTable {
       border-collapse: collapse;
       width: 100%;
       margin-top: 20px;
     }
-    #logTable th, #logTable td {
+    #dataTable th, #dataTable td {
       border: 1px solid #ccc;
       padding: 8px;
       text-align: left;
     }
-    #logTable th {
-      background-color: #eee;
+    #dataTable th {
+      background-color: #f2f2f2;
+    }
+    .flex-buttons {
+      margin-bottom: 10px;
+    }
+    .status {
+      margin-top: 10px;
+      font-size: 14px;
+      color: #555;
     }
   </style>
 </head>
 <body>
-  <h1>Polar Verity Sense Heart Rate Monitor</h1>
-  <button id="connectButton">デバイスに接続</button>
-  <button id="downloadCsvButton" disabled>CSVダウンロード</button>
-
-  <table id="logTable">
+  <h1>Polar H10 HRV Monitor</h1>
+  <div class="flex-buttons">
+    <button id="connectButton">Polar H10 と接続</button>
+    <button id="downloadButton" disabled>CSVダウンロード</button>
+  </div>
+  <div class="status" id="status">未接続</div>
+  <table id="dataTable">
     <thead>
       <tr>
-        <th>受信時刻</th>
+        <th>時刻</th>
         <th>BPM</th>
         <th>SDNN (ms)</th>
         <th>RMSSD (ms)</th>
+        <th>LF/HF</th>
       </tr>
     </thead>
-    <tbody id="logTbody">
-      <!-- ここに最新データを上から順に追加 -->
+    <tbody id="dataBody">
+      <!-- 最新のデータを上に表示 -->
     </tbody>
   </table>
 
   <script>
-    // RR間隔(ミリ秒)を保持する配列
-    let rrIntervals = [];
+    // ====================================
+    // グローバル変数
+    // ====================================
+    let heartRateCharacteristic = null;
+    // RR間隔をミリ秒で蓄積(最新200件など適度に制限)
+    const rrIntervalBuffer = [];
+    // 表示するデータ(時刻, BPM, SDNN, RMSSD, LF/HF)を蓄積
+    const dataRecords = [];
 
-    // ログを保持する（CSV化用）
-    // 形式: [{ timestamp, bpm, sdnn, rmssd }, ...]
-    let logData = [];
+    const statusElem = document.getElementById('status');
+    const dataBody = document.getElementById('dataBody');
+    const connectButton = document.getElementById('connectButton');
+    const downloadButton = document.getElementById('downloadButton');
 
-    document.getElementById('connectButton').addEventListener('click', connectToHeartRateMonitor);
-    document.getElementById('downloadCsvButton').addEventListener('click', downloadCsv);
-
-    /**
-     * デバイスと接続し、心拍サービスから通知を受け取る
-     */
-    async function connectToHeartRateMonitor() {
+    // ====================================
+    // Polar H10との接続処理
+    // ====================================
+    connectButton.addEventListener('click', async () => {
       try {
-        // BLE デバイスを検索 (Heart Rate Service = 0x180D)
+        statusElem.textContent = 'デバイス選択ダイアログを開いています...';
+        // Polar H10 は標準の Heart Rate Service (UUID: 0x180D) を提供
         const device = await navigator.bluetooth.requestDevice({
           filters: [{ services: ['heart_rate'] }]
         });
 
-        // GATT に接続
+        statusElem.textContent = 'デバイスに接続中...';
         const server = await device.gatt.connect();
 
         // Heart Rate Service を取得
         const service = await server.getPrimaryService('heart_rate');
+        // Heart Rate Measurement Characteristic (UUID: 0x2A37)
+        heartRateCharacteristic = await service.getCharacteristic('heart_rate_measurement');
 
-        // Heart Rate Measurement Characteristic (0x2A37) を取得
-        const characteristic = await service.getCharacteristic('heart_rate_measurement');
+        // 通知を受け取る
+        await heartRateCharacteristic.startNotifications();
+        heartRateCharacteristic.addEventListener('characteristicvaluechanged', handleHeartRateMeasurement);
 
-        // Notification を受け取るように設定
-        await characteristic.startNotifications();
-
-        // イベントリスナーを登録
-        characteristic.addEventListener('characteristicvaluechanged', handleHeartRateMeasurement);
-        alert('デバイスに接続しました。心拍データの取得を開始します。');
-
-        // CSV ダウンロードボタンを有効化
-        document.getElementById('downloadCsvButton').disabled = false;
-
+        statusElem.textContent = '接続しました。計測中...';
+        connectButton.disabled = true;
       } catch (error) {
         console.error(error);
-        alert('デバイスとの接続に失敗しました。');
+        statusElem.textContent = '接続エラー: ' + error;
       }
-    }
+    });
 
-    /**
-     * Heart Rate Measurement Characteristic の通知を受け取ったときの処理
-     * @param {Event} event
-     */
+    // ====================================
+    // Heart Rate Measurement 通知時の処理
+    // ====================================
     function handleHeartRateMeasurement(event) {
       const value = event.target.value;
-      // DataView からバイトを読み取る
-      // 参考: https://www.bluetooth.com/specifications/gatt/viewer?attributeXmlFile=org.bluetooth.characteristic.heart_rate_measurement.xml
-      let flags = value.getUint8(0);
+      // DataView から各種データをパース
+      const flags = value.getUint8(0);
+      const is16BitHR = flags & 0x1;
+      let bpm;
       let index = 1;
-      let bpm = 0;
 
-      // 1バイト (8bit) か2バイト (16bit) かチェック
-      const is16Bits = flags & 0x01;
-      if (is16Bits) {
+      if (is16BitHR) {
         bpm = value.getUint16(index, true);
         index += 2;
       } else {
@@ -110,140 +123,236 @@
         index += 1;
       }
 
-      // BPM を数値化
-      const heartRate = bpm;
-
-      // RR-Interval を含むフラグが立っているかどうか
-      const rrIntervalPresent = flags & 0x10;
-      let newRRs = [];
-      if (rrIntervalPresent) {
-        // 残りのデータが RR-Interval (2バイトずつ)
-        while (index < value.byteLength) {
-          const rrValue = value.getUint16(index, true);
-          index += 2;
-          // rrValue は単位 1/1024 秒なので、ミリ秒に変換
-          const rrMs = (rrValue * 1000) / 1024;
-          newRRs.push(rrMs);
-          rrIntervals.push(rrMs);
+      // RR間隔のフラグ(0x10)が立っている場合のみ
+      const rrFlag = flags & 0x10;
+      let rrIntervals = [];
+      if (rrFlag) {
+        // 残りのデータを RR-Interval としてパース(単位: 1/1024 s)
+        for (; index < value.byteLength; index += 2) {
+          const rr = value.getUint16(index, true);
+          // ms単位に変換
+          rrIntervals.push(rr * 1000.0 / 1024.0);
         }
       }
 
-      // SDNN, RMSSD を計算
-      const sdnn = computeSdnn(rrIntervals);
-      const rmssd = computeRmssd(rrIntervals);
+      // 取得したRR間隔をグローバルバッファに格納
+      rrIntervals.forEach(rr => {
+        rrIntervalBuffer.push(rr);
+      });
+      // バッファが大きくなりすぎないように先頭を切り捨て(例: 300件まで)
+      if (rrIntervalBuffer.length > 300) {
+        rrIntervalBuffer.splice(0, rrIntervalBuffer.length - 300);
+      }
 
-      // ログデータとして管理
+      // ここで HRV 指標を計算
+      const { sdnn, rmssd } = calculateTimeDomainHRV(rrIntervalBuffer);
+      const lfHf = calculateLFHFRatio(rrIntervalBuffer);
+
+      // テーブルの先頭に新しい行を追加する
       const timeString = new Date().toLocaleTimeString();
-      const logEntry = {
-        timestamp: timeString,
-        bpm: heartRate.toFixed(0),
+      const newRowData = {
+        time: timeString,
+        bpm: bpm.toFixed(0),
         sdnn: sdnn.toFixed(2),
         rmssd: rmssd.toFixed(2),
+        lfHf: lfHf.toFixed(2)
       };
-      logData.push(logEntry);
+      dataRecords.push(newRowData);
 
-      // 画面に表示 (最新を上に追加)
-      prependLogRow(logEntry);
+      // 表示を更新
+      prependTableRow(newRowData);
+      // CSV ダウンロードボタンを有効にする
+      downloadButton.disabled = false;
     }
 
-    /**
-     * テーブルの先頭に新しい行を追加
-     */
-    function prependLogRow(logEntry) {
-      const logTbody = document.getElementById('logTbody');
+    // ====================================
+    // テーブルに上から行を追加する
+    // ====================================
+    function prependTableRow(rowData) {
       const newRow = document.createElement('tr');
 
       const timeCell = document.createElement('td');
-      timeCell.textContent = logEntry.timestamp;
-      newRow.appendChild(timeCell);
-
+      timeCell.textContent = rowData.time;
       const bpmCell = document.createElement('td');
-      bpmCell.textContent = logEntry.bpm;
-      newRow.appendChild(bpmCell);
-
+      bpmCell.textContent = rowData.bpm;
       const sdnnCell = document.createElement('td');
-      sdnnCell.textContent = logEntry.sdnn;
-      newRow.appendChild(sdnnCell);
-
+      sdnnCell.textContent = rowData.sdnn;
       const rmssdCell = document.createElement('td');
-      rmssdCell.textContent = logEntry.rmssd;
+      rmssdCell.textContent = rowData.rmssd;
+      const lfHfCell = document.createElement('td');
+      lfHfCell.textContent = rowData.lfHf;
+
+      newRow.appendChild(timeCell);
+      newRow.appendChild(bpmCell);
+      newRow.appendChild(sdnnCell);
       newRow.appendChild(rmssdCell);
+      newRow.appendChild(lfHfCell);
 
-      // 最新を一番上に表示するため、先頭に挿入
-      if (logTbody.firstChild) {
-        logTbody.insertBefore(newRow, logTbody.firstChild);
+      // 最新のデータを「上に」表示するため、tbodyの先頭に挿入
+      if (dataBody.firstChild) {
+        dataBody.insertBefore(newRow, dataBody.firstChild);
       } else {
-        logTbody.appendChild(newRow);
+        dataBody.appendChild(newRow);
       }
     }
 
-    /**
-     * SDNN (RR間隔の標準偏差) を計算 (配列全体を対象)
-     * @param {number[]} rrArray - RR間隔配列 (ms)
-     * @returns {number}
-     */
-    function computeSdnn(rrArray) {
-      const n = rrArray.length;
-      if (n < 2) return 0;
+    // ====================================
+    // Time Domain (SDNN, RMSSD) の計算
+    // ====================================
+    function calculateTimeDomainHRV(rrArray) {
+      if (rrArray.length < 2) {
+        return { sdnn: 0, rmssd: 0 };
+      }
+      // 平均
+      const avg = rrArray.reduce((a, b) => a + b, 0) / rrArray.length;
+      // SDNN = RR間隔の標準偏差
+      const variance = rrArray.reduce((acc, val) => acc + Math.pow(val - avg, 2), 0) / rrArray.length;
+      const sdnn = Math.sqrt(variance);
 
-      const mean = rrArray.reduce((acc, val) => acc + val, 0) / n;
-      const variance = rrArray.reduce((acc, val) => {
-        const diff = val - mean;
-        return acc + diff * diff;
-      }, 0) / (n - 1);
+      // RMSSD = 連続するRR間隔の差分の二乗平均平方根
+      let sumSqDiff = 0;
+      for (let i = 1; i < rrArray.length; i++) {
+        const diff = rrArray[i] - rrArray[i - 1];
+        sumSqDiff += diff * diff;
+      }
+      const meanSqDiff = sumSqDiff / (rrArray.length - 1);
+      const rmssd = Math.sqrt(meanSqDiff);
 
-      return Math.sqrt(variance);
+      return { sdnn, rmssd };
     }
 
-    /**
-     * RMSSD (連続したRR間隔の差の2乗平均平方根) を計算 (配列全体を対象)
-     * @param {number[]} rrArray - RR間隔配列 (ms)
-     * @returns {number}
-     */
-    function computeRmssd(rrArray) {
-      const n = rrArray.length - 1;
-      if (n < 1) return 0;
-
-      let sumSq = 0;
-      for (let i = 0; i < n; i++) {
-        const diff = rrArray[i + 1] - rrArray[i];
-        sumSq += diff * diff;
+    // ====================================
+    // Frequency Domain (LF/HF) の簡易計算
+    // ====================================
+    // RR間隔配列から LF/HF を計算するためのサンプル関数
+    // 実際にはより厳密な処理(窓関数、補間、FFT長、周波数分解能等)が必要です。
+    function calculateLFHFRatio(rrArray) {
+      // サンプル数が足りない場合は0とする
+      if (rrArray.length < 4) {
+        return 0;
       }
 
-      const meanSq = sumSq / n;
-      return Math.sqrt(meanSq);
+      // 1. RR間隔(ミリ秒)を秒単位に変換して扱う
+      //    → LF, HFの定義上、周波数帯を 0.04-0.15Hz, 0.15-0.4Hz で見ることが多い
+      // 2. 不規則サンプリングなので本来は補間が必要だが、ここでは簡易処理として
+      //    過去の累積時間を計算した上で等間隔に再サンプリングする。
+      const timeStamps = [0];
+      for (let i = 1; i < rrArray.length; i++) {
+        timeStamps.push(timeStamps[i - 1] + rrArray[i - 1] / 1000.0);
+      }
+
+      // 等間隔サンプリングのためのレート(例えば4Hz=250ms間隔)に丸める
+      // ※ より精密には全体の平均レートやもっと高い周波数で補間する
+      const fs = 4; // サンプルレート(Hz)
+      const dt = 1.0 / fs;
+
+      const totalDuration = timeStamps[timeStamps.length - 1];
+      const resampledCount = Math.floor(totalDuration * fs);
+      if (resampledCount < 4) {
+        return 0;
+      }
+
+      // 補間による等間隔サンプリング: 線形補間でRR(t)を求める
+      // ここでRR(t)というよりは瞬時心拍のような値の方が本来は適切な場合もあるが、
+      // サンプルコードとして直接RRをスペクトル解析する
+      const resampledRR = [];
+      let currentIndex = 0;
+      for (let n = 0; n < resampledCount; n++) {
+        const t = n * dt;
+        // timeStamps[currentIndex] <= t <= timeStamps[currentIndex+1] を探して補間
+        while (currentIndex < timeStamps.length - 1 && timeStamps[currentIndex + 1] < t) {
+          currentIndex++;
+        }
+        if (currentIndex >= timeStamps.length - 1) {
+          // 末尾を超えたらループ終了
+          break;
+        }
+        const t1 = timeStamps[currentIndex];
+        const t2 = timeStamps[currentIndex + 1];
+        const rr1 = rrArray[currentIndex];
+        const rr2 = rrArray[currentIndex + 1];
+        if (t2 === t1) {
+          // まれに RR が0などおかしい場合のガード
+          resampledRR.push(rr1);
+        } else {
+          // 線形補間
+          const ratio = (t - t1) / (t2 - t1);
+          const rrInterp = rr1 + (rr2 - rr1) * ratio;
+          resampledRR.push(rrInterp);
+        }
+      }
+
+      // FFTを実行(ここでは1次元DFTを簡易実装する)-------------------------
+      // 本番ではライブラリや高速化したアルゴリズムを使ってください
+      const N = resampledRR.length;
+      if (N < 4) return 0;
+
+      // 窓関数(ハニングなど)をかける場合はここで適用
+      // ...省略(サンプルのため)
+
+      // DFT
+      const re = new Array(N).fill(0);
+      const im = new Array(N).fill(0);
+
+      for (let k = 0; k < N; k++) {
+        for (let n = 0; n < N; n++) {
+          const angle = (2 * Math.PI * k * n) / N;
+          re[k] += resampledRR[n] * Math.cos(angle);
+          im[k] -= resampledRR[n] * Math.sin(angle);
+        }
+      }
+
+      // スペクトルパワーを計算
+      const freqs = [];
+      const psd = [];
+      for (let k = 0; k < N; k++) {
+        // 周波数
+        const freq = (k * fs) / N;
+        // スペクトルパワー (平方和)
+        const magnitude = (re[k] * re[k] + im[k] * im[k]) / N; // /Nは正規化の一例
+        freqs.push(freq);
+        psd.push(magnitude);
+      }
+
+      // LF(0.04-0.15Hz), HF(0.15-0.4Hz) のパワーを積分 (厳密には近似)
+      let lfPower = 0;
+      let hfPower = 0;
+      for (let k = 0; k < N; k++) {
+        const f = freqs[k];
+        if (f >= 0.04 && f < 0.15) {
+          lfPower += psd[k];
+        } else if (f >= 0.15 && f < 0.4) {
+          hfPower += psd[k];
+        }
+      }
+      // LF/HF を計算
+      const lfHfRatio = hfPower === 0 ? 0 : lfPower / hfPower;
+      return lfHfRatio;
     }
 
-    /**
-     * CSV ダウンロード
-     */
-    function downloadCsv() {
-      if (logData.length === 0) {
-        alert('まだデータがありません。');
-        return;
-      }
+    // ====================================
+    // CSVダウンロード
+    // ====================================
+    downloadButton.addEventListener('click', () => {
+      // ヘッダ行
+      let csvContent = '時刻,BPM,SDNN (ms),RMSSD (ms),LF/HF\n';
+      dataRecords.forEach(record => {
+        csvContent += `${record.time},${record.bpm},${record.sdnn},${record.rmssd},${record.lfHf}\n`;
+      });
 
-      // CSV ヘッダ
-      let csvContent = 'Timestamp,BPM,SDNN(ms),RMSSD(ms)\n';
-
-      // データ行
-      for (const row of logData) {
-        csvContent += `${row.timestamp},${row.bpm},${row.sdnn},${row.rmssd}\n`;
-      }
-
-      // Blob を作成
-      const blob = new Blob([csvContent], { type: 'text/csv' });
+      const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
       const url = URL.createObjectURL(blob);
-
-      // ダウンロードリンクを作成してクリック
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = 'heart_rate_data.csv';
-      a.click();
-
-      // リソース解放
+      
+      const link = document.createElement('a');
+      link.setAttribute('href', url);
+      link.setAttribute('download', `PolarH10-HRV-${new Date().toISOString()}.csv`);
+      link.style.display = 'none';
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
       URL.revokeObjectURL(url);
-    }
+    });
+
   </script>
 </body>
 </html>
