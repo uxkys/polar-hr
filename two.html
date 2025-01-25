@@ -1,23 +1,261 @@
 <!DOCTYPE html>
 <html lang="ja">
 <head>
-  <meta charset="utf-8" />
+  <meta charset="utf-8"/>
   <title>Polar Verity Sense HRV Demo</title>
-
-  <!-- (1) React/ReactDOM/Chakra UIをCDNで読み込み -->
-  <!-- 開発用: *.development.js (本番は *.production.min.js を推奨) -->
-  <script src="https://unpkg.com/react@18/umd/react.development.js" crossorigin></script>
-  <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js" crossorigin></script>
-  <script src="https://unpkg.com/@chakra-ui/react@2.5.2/dist/chakra-ui-react.umd.development.js" crossorigin></script>
-
-  <!-- (2) 独自CSSを読み込み -->
-  <link rel="stylesheet" href="./css/style.css">
+  <style>
+    body {
+      font-family: sans-serif;
+      margin: 20px;
+    }
+    .hidden {
+      display: none;
+    }
+  </style>
 </head>
 <body>
-  <!-- (3) Reactアプリをマウントするルート要素 -->
-  <div id="root"></div>
+  <h1>Polar Verity Sense HRV Demo</h1>
 
-  <!-- (4) メインロジック (Web Bluetooth + HRV解析) -->
-  <script src="./js/app.js"></script>
+  <p>
+    <button id="connectButton">1. デバイスと接続</button>
+  </p>
+
+  <!-- 計測時間の指定フォーム -->
+  <p>
+    <label for="measureMinutes">2. ベースライン計測時間(分)：</label>
+    <input type="number" id="measureMinutes" value="5" min="1" style="width:50px;"> 分
+    <button id="startMeasurement" class="hidden">ベースライン計測スタート</button>
+  </p>
+
+  <p id="statusMessage"></p>
+
+  <!-- 計測終了後に表示する結果 -->
+  <div id="results" class="hidden">
+    <h2>HRV解析結果</h2>
+    <p>SDNN: <span id="sdnnValue">--</span> ms</p>
+    <p>RMSSD: <span id="rmssdValue">--</span> ms</p>
+    <p>LF/HF: <span id="lfHfValue">--</span></p>
+  </div>
+
+  <script>
+    let heartRateCharacteristic = null;
+    let rrIntervals = []; // RR間隔（ミリ秒）を蓄積
+    let measurementTimer = null;
+
+    const connectButton = document.getElementById('connectButton');
+    const startMeasurementBtn = document.getElementById('startMeasurement');
+    const measureMinutesInput = document.getElementById('measureMinutes');
+    const statusMessage = document.getElementById('statusMessage');
+    const resultsDiv = document.getElementById('results');
+    const sdnnValueSpan = document.getElementById('sdnnValue');
+    const rmssdValueSpan = document.getElementById('rmssdValue');
+    const lfHfValueSpan = document.getElementById('lfHfValue');
+
+    //=== 1) Polar と接続 ===
+    connectButton.addEventListener('click', async () => {
+      try {
+        // デバイス選択
+        const device = await navigator.bluetooth.requestDevice({
+          filters: [{ services: ['heart_rate'] }]
+        });
+        statusMessage.textContent = 'デバイスに接続中...';
+        
+        // GATTに接続
+        const server = await device.gatt.connect();
+        const service = await server.getPrimaryService('heart_rate');
+        heartRateCharacteristic = await service.getCharacteristic('heart_rate_measurement');
+        
+        // 通知を開始
+        await heartRateCharacteristic.startNotifications();
+        heartRateCharacteristic.addEventListener('characteristicvaluechanged', handleHeartRateMeasurement);
+
+        connectButton.disabled = true;
+        startMeasurementBtn.classList.remove('hidden');
+        statusMessage.textContent = 'デバイスと接続しました。計測時間を指定し、ベースライン計測を始めてください。';
+      } catch (error) {
+        console.error(error);
+        statusMessage.textContent = 'デバイス接続中にエラーが発生: ' + error;
+      }
+    });
+
+    //=== 2) 指定した分数だけベースライン計測 ===
+    startMeasurementBtn.addEventListener('click', () => {
+      const measureMinutes = parseInt(measureMinutesInput.value, 10);
+      if (!heartRateCharacteristic) {
+        alert('先にデバイスと接続してください。');
+        return;
+      }
+      if (isNaN(measureMinutes) || measureMinutes < 1) {
+        alert('計測時間は1分以上を入力してください。');
+        return;
+      }
+
+      // 計測開始
+      rrIntervals = []; // RR配列をリセット
+      statusMessage.textContent = `ベースライン計測中...(${measureMinutes}分間)`;
+      resultsDiv.classList.add('hidden');
+
+      // すでにタイマーが動いていたらクリア
+      if (measurementTimer) {
+        clearTimeout(measurementTimer);
+      }
+
+      // 指定時間が経過したら計測終了→解析
+      measurementTimer = setTimeout(() => {
+        finishMeasurement();
+      }, measureMinutes * 60 * 1000);
+    });
+
+    //=== 計測終了後に解析を行う関数 ===
+    function finishMeasurement() {
+      statusMessage.textContent = 'ベースライン計測が終了しました。解析を開始します...';
+
+      // RR間隔からSDNN、RMSSDを計算
+      const { sdnn, rmssd } = calcTimeDomainMetrics(rrIntervals);
+      sdnnValueSpan.textContent = sdnn.toFixed(2);
+      rmssdValueSpan.textContent = rmssd.toFixed(2);
+
+      // LF/HFを計算 (簡易FFT)
+      const lfHfRatio = calcFrequencyDomainLFHF(rrIntervals);
+      lfHfValueSpan.textContent = lfHfRatio.toFixed(2);
+
+      resultsDiv.classList.remove('hidden');
+      statusMessage.textContent = '解析完了。結果を確認してください。';
+    }
+
+    //=== Heart Rate Measurement Characteristic 取得時のイベント ===
+    function handleHeartRateMeasurement(event) {
+      const value = event.target.value;
+      const flags = value.getUint8(0);
+      let index = 1;
+
+      // 心拍数のビットサイズ判定
+      const is16Bits = flags & 0x01;
+      let heartRate;
+      if (is16Bits) {
+        heartRate = value.getUint16(index, true);
+        index += 2;
+      } else {
+        heartRate = value.getUint8(index);
+        index += 1;
+      }
+
+      // RR-Intervalが含まれているかのフラグ (bit4) → 0x10 = 16 (decimal)
+      const rrIncluded = flags & 0x10; // (4番目のbitが1であればRR間隔あり)
+      if (rrIncluded) {
+        // RR間隔は、2バイトずつ格納されている(リトルエンディアン)
+        while (index + 1 < value.byteLength) {
+          const rrValue = value.getUint16(index, true);
+          index += 2;
+          // RRは1/1024秒単位。msに直すには (1000 / 1024) ≈ 0.9765625倍
+          // ここではミリ秒に近い値になるように四捨五入
+          const rrMs = rrValue * (1000 / 1024);
+          
+          // 計測中なら配列にプッシュ
+          rrIntervals.push(rrMs);
+        }
+      }
+
+      // コンソールで確認
+      // console.log('HR:', heartRate, 'RR length:', rrIntervals.length);
+    }
+
+    //=== 【A】時系列指標(SDNN, RMSSD)を計算 ===
+    function calcTimeDomainMetrics(rrArray) {
+      if (rrArray.length < 2) {
+        return { sdnn: 0, rmssd: 0 };
+      }
+      // 平均
+      const meanRR = rrArray.reduce((a,b)=>a+b,0) / rrArray.length;
+      // SDNN (標準偏差)
+      const variance = rrArray.reduce((acc, val) => acc + Math.pow((val - meanRR), 2), 0) / rrArray.length;
+      const sdnn = Math.sqrt(variance);
+
+      // RMSSD (連続するビート間の差分の二乗平均の平方根)
+      let sumSqDiff = 0;
+      for(let i=1; i<rrArray.length; i++){
+        const diff = rrArray[i] - rrArray[i-1];
+        sumSqDiff += diff * diff;
+      }
+      const meanSqDiff = sumSqDiff / (rrArray.length - 1);
+      const rmssd = Math.sqrt(meanSqDiff);
+
+      return { sdnn, rmssd };
+    }
+
+    //=== 【B】周波数解析(LF/HF)を計算 (簡易版) ===
+    function calcFrequencyDomainLFHF(rrArray) {
+      // データが少なすぎる場合は0
+      if (rrArray.length < 4) return 0;
+
+      // ■本来は不等間隔データ→等間隔に補間 or Lomb-Scargleなどが必要
+      // ここでは簡易的に、(合計時間をNで割って)等間隔に近い形に変換しFFTするデモを行う
+
+      // 1) RR配列を時系列に変換 (合計時間, 平均HR)
+      const totalTimeSec = rrArray.reduce((a,b)=>a+b,0) / 1000; // ミリ秒→秒
+      const n = rrArray.length;
+      // 等間隔サンプリング数をnに固定してサンプリング間隔を計算
+      const dt = totalTimeSec / n; // ざっくり
+      // 累積で時刻を計算し、そこに線形補間などするのが理想だが、ここでは平均値を使った近似
+      // とりあえずRR間隔そのままを "モックの時系列" として使う
+
+      // 2) 簡易的にFFTができる関数を用意（またはライブラリを使う）
+      //    ここでは「分割統治の高速FFT」実装を書くと長いので、離散フーリエ変換(DFT)で代用(計算量O(n^2))
+      //    nが大きいと実用的ではありませんが、サンプルとして掲載します。
+
+      function dft(inputReal) {
+        // inputReal: 配列(長さn)
+        const n = inputReal.length;
+        const outReal = new Array(n).fill(0);
+        const outImag = new Array(n).fill(0);
+
+        for (let k = 0; k < n; k++) {
+          let sumReal = 0;
+          let sumImag = 0;
+          for (let t = 0; t < n; t++) {
+            const angle = (2 * Math.PI * t * k) / n;
+            sumReal += inputReal[t] * Math.cos(angle);
+            sumImag += -inputReal[t] * Math.sin(angle);
+          }
+          outReal[k] = sumReal;
+          outImag[k] = sumImag;
+        }
+        return { real: outReal, imag: outImag };
+      }
+
+      // 3) RR配列(ミリ秒)を「心拍変動の波形」とみなし、DC成分を取り除いてDFT
+      //    まず平均を引く
+      const mean = rrArray.reduce((a,b)=>a+b,0)/n;
+      const centered = rrArray.map(v => v - mean);
+
+      // DFT実行
+      const {real, imag} = dft(centered);
+
+      // 周波数解釈:
+      //   周波数分解能 = 1 / (n * dt) [Hz]
+      //   k番目の周波数 = k * (1 / (n * dt)) [Hz]  (0 <= k < n)
+      //   ただしエイリアシング等を考慮すると有効帯域は n/2 まで
+      const df = 1 / (n * dt);
+
+      // 4) 各周波数のパワーを算出 (real^2 + imag^2)
+      //    LF: 0.04 - 0.15 Hz
+      //    HF: 0.15 - 0.40 Hz
+      let lfPower = 0;
+      let hfPower = 0;
+      for (let k=1; k < n/2; k++) {
+        const freq = k * df;
+        const power = (real[k]*real[k] + imag[k]*imag[k]);
+        if (freq >= 0.04 && freq < 0.15) {
+          lfPower += power;
+        } else if (freq >= 0.15 && freq < 0.40) {
+          hfPower += power;
+        }
+      }
+
+      // 5) LF/HF比
+      if (hfPower === 0) return 0;
+      return lfPower / hfPower;
+    }
+  </script>
 </body>
 </html>
