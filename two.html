@@ -11,6 +11,24 @@
     .hidden {
       display: none;
     }
+    table {
+      border-collapse: collapse;
+      width: 100%;
+      max-width: 600px;
+      margin-top: 10px;
+    }
+    th, td {
+      border: 1px solid #ccc;
+      padding: 4px 8px;
+      text-align: center;
+    }
+    th {
+      background-color: #f5f5f5;
+    }
+    #countdown {
+      font-weight: bold;
+      color: red;
+    }
   </style>
 </head>
 <body>
@@ -28,28 +46,65 @@
   </p>
 
   <p id="statusMessage"></p>
+  <p id="countdown" class="hidden"></p>
+
+  <!-- リアルタイム履歴表示テーブル -->
+  <table id="hrvTable" class="hidden">
+    <thead>
+      <tr>
+        <th>計測時刻</th>
+        <th>心拍 (bpm)</th>
+        <th>RR間隔 (ms)</th>
+        <th>SDNN (ms)</th>
+        <th>RMSSD (ms)</th>
+      </tr>
+    </thead>
+    <tbody>
+      <!-- 最新データを上に挿入していく -->
+    </tbody>
+  </table>
 
   <!-- 計測終了後に表示する結果 -->
   <div id="results" class="hidden">
-    <h2>HRV解析結果</h2>
+    <h2>ベースライン解析結果</h2>
+    <p>平均心拍: <span id="avgHrValue">--</span> bpm</p>
     <p>SDNN: <span id="sdnnValue">--</span> ms</p>
     <p>RMSSD: <span id="rmssdValue">--</span> ms</p>
     <p>LF/HF: <span id="lfHfValue">--</span></p>
   </div>
 
+  <!-- CSVダウンロードボタン -->
+  <p>
+    <button id="downloadCsvBtn" class="hidden">CSVダウンロード</button>
+  </p>
+
   <script>
     let heartRateCharacteristic = null;
-    let rrIntervals = []; // RR間隔（ミリ秒）を蓄積
-    let measurementTimer = null;
 
-    const connectButton = document.getElementById('connectButton');
-    const startMeasurementBtn = document.getElementById('startMeasurement');
-    const measureMinutesInput = document.getElementById('measureMinutes');
-    const statusMessage = document.getElementById('statusMessage');
-    const resultsDiv = document.getElementById('results');
-    const sdnnValueSpan = document.getElementById('sdnnValue');
-    const rmssdValueSpan = document.getElementById('rmssdValue');
-    const lfHfValueSpan = document.getElementById('lfHfValue');
+    // RR間隔、心拍などをリアルタイムで貯める履歴
+    // 各要素: { timestamp, heartRate, rrMs, sdnn, rmssd }
+    let hrvDataHistory = [];
+
+    // ベースライン測定用
+    let baselineActive = false; // ベースライン測定中かどうか
+    let measurementTimer = null; // 計測終了用タイマー
+    let countdownTimer = null;   // カウントダウン用タイマー
+    let remainingSeconds = 0;    // カウントダウン残り秒数
+
+    // DOM取得
+    const connectButton        = document.getElementById('connectButton');
+    const startMeasurementBtn  = document.getElementById('startMeasurement');
+    const measureMinutesInput  = document.getElementById('measureMinutes');
+    const statusMessage        = document.getElementById('statusMessage');
+    const countdownDisplay     = document.getElementById('countdown');
+    const hrvTable             = document.getElementById('hrvTable');
+    const hrvTableBody         = hrvTable.querySelector('tbody');
+    const resultsDiv           = document.getElementById('results');
+    const avgHrValueSpan       = document.getElementById('avgHrValue');
+    const sdnnValueSpan        = document.getElementById('sdnnValue');
+    const rmssdValueSpan       = document.getElementById('rmssdValue');
+    const lfHfValueSpan        = document.getElementById('lfHfValue');
+    const downloadCsvBtn       = document.getElementById('downloadCsvBtn');
 
     //=== 1) Polar と接続 ===
     connectButton.addEventListener('click', async () => {
@@ -59,12 +114,12 @@
           filters: [{ services: ['heart_rate'] }]
         });
         statusMessage.textContent = 'デバイスに接続中...';
-        
+
         // GATTに接続
         const server = await device.gatt.connect();
         const service = await server.getPrimaryService('heart_rate');
         heartRateCharacteristic = await service.getCharacteristic('heart_rate_measurement');
-        
+
         // 通知を開始
         await heartRateCharacteristic.startNotifications();
         heartRateCharacteristic.addEventListener('characteristicvaluechanged', handleHeartRateMeasurement);
@@ -91,39 +146,84 @@
       }
 
       // 計測開始
-      rrIntervals = []; // RR配列をリセット
-      statusMessage.textContent = `ベースライン計測中...(${measureMinutes}分間)`;
+      baselineActive = true;
+      hrvDataHistory = []; // リセット
+      hrvTableBody.innerHTML = ''; // テーブル表示をクリア
       resultsDiv.classList.add('hidden');
+      hrvTable.classList.remove('hidden');
+      downloadCsvBtn.classList.add('hidden');
 
-      // すでにタイマーが動いていたらクリア
-      if (measurementTimer) {
-        clearTimeout(measurementTimer);
-      }
+      statusMessage.textContent = `ベースライン計測中...(${measureMinutes}分間)`;
 
-      // 指定時間が経過したら計測終了→解析
+      // 既存のタイマーをクリア
+      if (measurementTimer) clearTimeout(measurementTimer);
+      if (countdownTimer)   clearInterval(countdownTimer);
+
+      // 計測終了タイマー
       measurementTimer = setTimeout(() => {
         finishMeasurement();
       }, measureMinutes * 60 * 1000);
+
+      // カウントダウン開始
+      remainingSeconds = measureMinutes * 60;
+      countdownDisplay.classList.remove('hidden');
+      updateCountdown(); // 初期表示
+      countdownTimer = setInterval(() => {
+        remainingSeconds--;
+        if (remainingSeconds <= 0) {
+          clearInterval(countdownTimer);
+        }
+        updateCountdown();
+      }, 1000);
     });
 
-    //=== 計測終了後に解析を行う関数 ===
+    //=== カウントダウン表示更新 ===
+    function updateCountdown() {
+      if (remainingSeconds < 0) {
+        countdownDisplay.textContent = '';
+        countdownDisplay.classList.add('hidden');
+      } else {
+        const min = Math.floor(remainingSeconds / 60);
+        const sec = remainingSeconds % 60;
+        countdownDisplay.textContent = `残り時間: ${min}分${sec}秒`;
+      }
+    }
+
+    //=== 3) 計測終了後に解析を行う関数 ===
     function finishMeasurement() {
+      baselineActive = false;
+      countdownDisplay.textContent = '';
+      countdownDisplay.classList.add('hidden');
       statusMessage.textContent = 'ベースライン計測が終了しました。解析を開始します...';
 
-      // RR間隔からSDNN、RMSSDを計算
+      // RR間隔の配列を抽出 (hrvDataHistory からrrMsだけ抜く)
+      const rrIntervals = hrvDataHistory.map(d => d.rrMs).filter(v => v != null);
+
+      // SDNN、RMSSDを計算
       const { sdnn, rmssd } = calcTimeDomainMetrics(rrIntervals);
-      sdnnValueSpan.textContent = sdnn.toFixed(2);
-      rmssdValueSpan.textContent = rmssd.toFixed(2);
 
       // LF/HFを計算 (簡易FFT)
       const lfHfRatio = calcFrequencyDomainLFHF(rrIntervals);
-      lfHfValueSpan.textContent = lfHfRatio.toFixed(2);
+
+      // 平均心拍を計算
+      const heartRates = hrvDataHistory.map(d => d.heartRate).filter(v => v != null);
+      let avgHr = 0;
+      if (heartRates.length > 0) {
+        avgHr = heartRates.reduce((a,b) => a+b, 0) / heartRates.length;
+      }
+
+      // 画面表示
+      avgHrValueSpan.textContent   = avgHr.toFixed(1);
+      sdnnValueSpan.textContent    = sdnn.toFixed(2);
+      rmssdValueSpan.textContent   = rmssd.toFixed(2);
+      lfHfValueSpan.textContent    = lfHfRatio.toFixed(2);
 
       resultsDiv.classList.remove('hidden');
       statusMessage.textContent = '解析完了。結果を確認してください。';
+      downloadCsvBtn.classList.remove('hidden');
     }
 
-    //=== Heart Rate Measurement Characteristic 取得時のイベント ===
+    //=== 4) Heart Rate Measurement Characteristic 取得時のイベント ===
     function handleHeartRateMeasurement(event) {
       const value = event.target.value;
       const flags = value.getUint8(0);
@@ -140,27 +240,69 @@
         index += 1;
       }
 
-      // RR-Intervalが含まれているかのフラグ (bit4) → 0x10 = 16 (decimal)
-      const rrIncluded = flags & 0x10; // (4番目のbitが1であればRR間隔あり)
+      let rrMs = null; // 今回の計測で取得した最後のRR (複数ある場合は最後を使用)
+      // RR-Intervalが含まれているか (bit4)
+      const rrIncluded = flags & 0x10;
       if (rrIncluded) {
-        // RR間隔は、2バイトずつ格納されている(リトルエンディアン)
+        // RR間隔は、2バイトずつ格納(リトルエンディアン)
         while (index + 1 < value.byteLength) {
           const rrValue = value.getUint16(index, true);
           index += 2;
-          // RRは1/1024秒単位。msに直すには (1000 / 1024) ≈ 0.9765625倍
-          // ここではミリ秒に近い値になるように四捨五入
-          const rrMs = rrValue * (1000 / 1024);
-          
-          // 計測中なら配列にプッシュ
-          rrIntervals.push(rrMs);
+          // 1/1024秒単位 → ms換算
+          rrMs = rrValue * (1000 / 1024);
         }
       }
 
-      // コンソールで確認
-      // console.log('HR:', heartRate, 'RR length:', rrIntervals.length);
+      // 計測がアクティブな間のみ履歴を更新
+      if (baselineActive) {
+        // 最新のRR配列を作成
+        const rrIntervals = [...hrvDataHistory.map(d => d.rrMs).filter(v=>v!=null), rrMs];
+
+        // SDNN/RMSSDをリアルタイムで計算
+        const { sdnn, rmssd } = calcTimeDomainMetrics(rrIntervals);
+
+        // テーブル最上部に新しい行を挿入
+        const timestampStr = getTimeString(); // "HH:MM:SS" 形式
+        const newRowData = {
+          timestamp: timestampStr,
+          heartRate: heartRate,
+          rrMs: rrMs,
+          sdnn: sdnn,
+          rmssd: rmssd
+        };
+        hrvDataHistory.push(newRowData);
+        prependTableRow(newRowData);
+      }
     }
 
-    //=== 【A】時系列指標(SDNN, RMSSD)を計算 ===
+    //=== テーブルの先頭に1行追加する ===
+    function prependTableRow(data) {
+      const row = document.createElement('tr');
+      row.innerHTML = `
+        <td>${data.timestamp}</td>
+        <td>${data.heartRate != null ? data.heartRate : '--'}</td>
+        <td>${data.rrMs != null ? data.rrMs.toFixed(2) : '--'}</td>
+        <td>${data.sdnn.toFixed(2)}</td>
+        <td>${data.rmssd.toFixed(2)}</td>
+      `;
+      // 最新を上に表示するため先頭に追加
+      if (hrvTableBody.firstChild) {
+        hrvTableBody.insertBefore(row, hrvTableBody.firstChild);
+      } else {
+        hrvTableBody.appendChild(row);
+      }
+    }
+
+    //=== 便利: 現在時刻(時:分:秒)文字列を返す ===
+    function getTimeString() {
+      const now = new Date();
+      const hh = String(now.getHours()).padStart(2, '0');
+      const mm = String(now.getMinutes()).padStart(2, '0');
+      const ss = String(now.getSeconds()).padStart(2, '0');
+      return `${hh}:${mm}:${ss}`;
+    }
+
+    //=== [A] 時系列指標(SDNN, RMSSD)を計算 ===
     function calcTimeDomainMetrics(rrArray) {
       if (rrArray.length < 2) {
         return { sdnn: 0, rmssd: 0 };
@@ -171,7 +313,7 @@
       const variance = rrArray.reduce((acc, val) => acc + Math.pow((val - meanRR), 2), 0) / rrArray.length;
       const sdnn = Math.sqrt(variance);
 
-      // RMSSD (連続するビート間の差分の二乗平均の平方根)
+      // RMSSD
       let sumSqDiff = 0;
       for(let i=1; i<rrArray.length; i++){
         const diff = rrArray[i] - rrArray[i-1];
@@ -183,79 +325,95 @@
       return { sdnn, rmssd };
     }
 
-    //=== 【B】周波数解析(LF/HF)を計算 (簡易版) ===
+    //=== [B] 周波数解析(LF/HF)を計算 (簡易版) ===
     function calcFrequencyDomainLFHF(rrArray) {
       // データが少なすぎる場合は0
       if (rrArray.length < 4) return 0;
 
-      // ■本来は不等間隔データ→等間隔に補間 or Lomb-Scargleなどが必要
-      // ここでは簡易的に、(合計時間をNで割って)等間隔に近い形に変換しFFTするデモを行う
-
-      // 1) RR配列を時系列に変換 (合計時間, 平均HR)
-      const totalTimeSec = rrArray.reduce((a,b)=>a+b,0) / 1000; // ミリ秒→秒
+      // 1) RR配列を平均引き去り
       const n = rrArray.length;
-      // 等間隔サンプリング数をnに固定してサンプリング間隔を計算
-      const dt = totalTimeSec / n; // ざっくり
-      // 累積で時刻を計算し、そこに線形補間などするのが理想だが、ここでは平均値を使った近似
-      // とりあえずRR間隔そのままを "モックの時系列" として使う
-
-      // 2) 簡易的にFFTができる関数を用意（またはライブラリを使う）
-      //    ここでは「分割統治の高速FFT」実装を書くと長いので、離散フーリエ変換(DFT)で代用(計算量O(n^2))
-      //    nが大きいと実用的ではありませんが、サンプルとして掲載します。
-
-      function dft(inputReal) {
-        // inputReal: 配列(長さn)
-        const n = inputReal.length;
-        const outReal = new Array(n).fill(0);
-        const outImag = new Array(n).fill(0);
-
-        for (let k = 0; k < n; k++) {
-          let sumReal = 0;
-          let sumImag = 0;
-          for (let t = 0; t < n; t++) {
-            const angle = (2 * Math.PI * t * k) / n;
-            sumReal += inputReal[t] * Math.cos(angle);
-            sumImag += -inputReal[t] * Math.sin(angle);
-          }
-          outReal[k] = sumReal;
-          outImag[k] = sumImag;
-        }
-        return { real: outReal, imag: outImag };
-      }
-
-      // 3) RR配列(ミリ秒)を「心拍変動の波形」とみなし、DC成分を取り除いてDFT
-      //    まず平均を引く
-      const mean = rrArray.reduce((a,b)=>a+b,0)/n;
+      const mean = rrArray.reduce((a,b)=>a+b,0) / n;
       const centered = rrArray.map(v => v - mean);
 
-      // DFT実行
-      const {real, imag} = dft(centered);
+      // 2) 総時間からサンプリング周期を推定
+      const totalTimeSec = rrArray.reduce((a,b)=>a+b,0) / 1000;
+      const dt = totalTimeSec / n;
 
-      // 周波数解釈:
-      //   周波数分解能 = 1 / (n * dt) [Hz]
-      //   k番目の周波数 = k * (1 / (n * dt)) [Hz]  (0 <= k < n)
-      //   ただしエイリアシング等を考慮すると有効帯域は n/2 まで
+      // 3) 離散フーリエ変換(DFT) (サンプルなのでO(n^2)で実装)
+      const { real, imag } = dft(centered);
+
+      // 周波数分解能
       const df = 1 / (n * dt);
 
-      // 4) 各周波数のパワーを算出 (real^2 + imag^2)
-      //    LF: 0.04 - 0.15 Hz
-      //    HF: 0.15 - 0.40 Hz
+      // LF/HF帯域
       let lfPower = 0;
       let hfPower = 0;
-      for (let k=1; k < n/2; k++) {
+      for (let k = 1; k < n/2; k++) {
         const freq = k * df;
-        const power = (real[k]*real[k] + imag[k]*imag[k]);
+        const power = real[k]*real[k] + imag[k]*imag[k];
         if (freq >= 0.04 && freq < 0.15) {
           lfPower += power;
         } else if (freq >= 0.15 && freq < 0.40) {
           hfPower += power;
         }
       }
-
-      // 5) LF/HF比
       if (hfPower === 0) return 0;
       return lfPower / hfPower;
     }
+
+    //=== DFT関数 (簡易版) ===
+    function dft(inputReal) {
+      const n = inputReal.length;
+      const outReal = new Array(n).fill(0);
+      const outImag = new Array(n).fill(0);
+
+      for (let k = 0; k < n; k++) {
+        let sumReal = 0;
+        let sumImag = 0;
+        for (let t = 0; t < n; t++) {
+          const angle = (2 * Math.PI * t * k) / n;
+          sumReal += inputReal[t] * Math.cos(angle);
+          sumImag += -inputReal[t] * Math.sin(angle);
+        }
+        outReal[k] = sumReal;
+        outImag[k] = sumImag;
+      }
+      return { real: outReal, imag: outImag };
+    }
+
+    //=== 5) CSVダウンロード ===
+    downloadCsvBtn.addEventListener('click', () => {
+      if (hrvDataHistory.length === 0) {
+        alert("ダウンロードするデータがありません。");
+        return;
+      }
+      // CSV文字列を生成
+      // ヘッダ: timestamp,heartRate,rrMs,sdnn,rmssd
+      let csvContent = "data:text/csv;charset=utf-8,";
+      csvContent += "timestamp,heartRate,rrMs,sdnn,rmssd\r\n";
+
+      // 履歴を下から上に出力したければ逆順にするが、ここでは保存時は時系列通りにしておく
+      // hrvDataHistory は push しているので測定順に並んでいます
+      hrvDataHistory.forEach(item => {
+        const row = [
+          item.timestamp,
+          item.heartRate != null ? item.heartRate : "",
+          item.rrMs != null ? item.rrMs.toFixed(2) : "",
+          item.sdnn != null ? item.sdnn.toFixed(2) : "",
+          item.rmssd != null ? item.rmssd.toFixed(2) : ""
+        ];
+        csvContent += row.join(",") + "\r\n";
+      });
+
+      // ダウンロード用リンクを生成
+      const encodedUri = encodeURI(csvContent);
+      const link = document.createElement("a");
+      link.setAttribute("href", encodedUri);
+      link.setAttribute("download", "hrv_data.csv");
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+    });
   </script>
 </body>
 </html>
