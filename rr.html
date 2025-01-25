@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <title>Polar Verity Sense R-R Interval Monitor</title>
+</head>
+<body>
+  <h1>Polar Verity Sense R-R Interval Monitor</h1>
+  <!-- 接続用ボタン -->
+  <button id="connect">Connect to Polar</button>
+  
+  <!-- 結果表示 -->
+  <div id="output" style="margin-top: 1em; font-family: sans-serif;"></div>
+  
+  <script>
+    const connectButton = document.getElementById("connect");
+    const outputDiv     = document.getElementById("output");
+    
+    connectButton.addEventListener("click", async () => {
+      try {
+        // 1. デバイス選択ダイアログを表示 (MacBook Air で BLE 機器スキャン)
+        const device = await navigator.bluetooth.requestDevice({
+          // Polar Verity Sense を特定したい場合 (名前プレフィックス、またはheart_rateサービス指定)
+          filters: [
+            // 例: 名前に "Polar" を含む
+            { namePrefix: "Polar" }
+          ],
+          optionalServices: ["heart_rate"] // Heart Rate Serviceを指定
+        });
+
+        // 2. GATT Server へ接続
+        const server = await device.gatt.connect();
+
+        // 3. heart_rate サービスを取得
+        const service = await server.getPrimaryService("heart_rate");
+
+        // 4. heart_rate_measurement キャラクタリスティック (0x2A37) を取得
+        const characteristic = await service.getCharacteristic("heart_rate_measurement");
+
+        // 5. 通知開始 (心拍データを受け取る)
+        await characteristic.startNotifications();
+
+        // 6. データ取得時のイベントリスナーを設定
+        characteristic.addEventListener("characteristicvaluechanged", handleHeartRateMeasurement);
+
+        outputLog("Connected to Polar Verity Sense. Waiting for data...");
+        
+      } catch (error) {
+        console.error(error);
+        outputLog("Error: " + error.message);
+      }
+    });
+
+    /**
+     * Heart Rate Measurement Characteristic の通知を受け取った時の処理
+     * @param {Event} event 
+     */
+    function handleHeartRateMeasurement(event) {
+      const value = event.target.value;
+
+      // バイナリデータをパースする
+      // 参考: https://www.bluetooth.com/specifications/gatt/viewer?attributeXmlFile=org.bluetooth.characteristic.heart_rate_measurement.xml
+      let index = 0;
+      const flags = value.getUint8(index);
+      index++;
+
+      // bit0 (LSB) => 1なら16bit HR, 0なら8bit HR
+      const isHeartRateValueSizeLong = flags & 0x01;
+      // bit4 => RR Interval が含まれるフラグ
+      const hasRRInterval = flags & 0x10;
+
+      let heartRate;
+      if (isHeartRateValueSizeLong) {
+        // 16bit
+        heartRate = value.getUint16(index, /* littleEndian= */ true);
+        index += 2;
+      } else {
+        // 8bit
+        heartRate = value.getUint8(index);
+        index += 1;
+      }
+
+      // R-R Interval
+      const rrIntervals = [];
+      if (hasRRInterval) {
+        // 残りのバイトを 2byteずつ読み取る
+        while (index + 1 < value.byteLength) {
+          const rrValue = value.getUint16(index, true);
+          index += 2;
+          // 単位は 1/1024 [s] -> 秒に変換
+          const rrInSeconds = rrValue / 1024.0;
+          rrIntervals.push(rrInSeconds);
+        }
+      }
+
+      // 結果を画面表示
+      // R-R インターバルは複数個来る場合もあるので、まとめて表示
+      outputLog(`
+        <strong>Heart Rate:</strong> ${heartRate} bpm<br>
+        <strong>R-R Intervals (sec):</strong> ${rrIntervals.map(sec => sec.toFixed(3)).join(", ")}
+      `);
+    }
+
+    /**
+     * 画面にログを表示するヘルパー
+     */
+    function outputLog(message) {
+      outputDiv.innerHTML = message;
+    }
+  </script>
+</body>
+</html>
