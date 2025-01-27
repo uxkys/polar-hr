@@ -23,7 +23,7 @@
       border: 1px solid #ccc;
       padding: 8px;
       text-align: left;
-      font-size: 14px; /* Make table font smaller (same as baseline display) */
+      font-size: 14px; /* smaller font */
     }
     #dataTable th {
       background-color: #f2f2f2;
@@ -75,7 +75,7 @@
   <div class="baseline-box" id="baselineBox" style="display: none;">
     <strong id="baselineStatus">Baseline not started</strong><br>
     <div id="baselineResults" class="small-text hidden">
-      <div>Baseline Results</div>
+      <div>Baseline Results (Median)</div>
       BPM: <span id="baselineBpm">-</span><br>
       SDNN (ms): <span id="baselineSdnn">-</span><br>
       RMSSD (ms): <span id="baselineRmssd">-</span><br>
@@ -126,6 +126,9 @@
     let baselineRecords = []; // store data for baseline
     let baselineIntervalId = null; // for the countdown timer
     let baselineRemainingSeconds = 0;
+
+    // We'll skip the first 10 seconds from baseline measurement
+    const BASELINE_SKIP_MS = 10000;
 
     // Elements
     const statusElem = document.getElementById('status');
@@ -186,30 +189,33 @@
       isMeasuring = true;
       measurementStartTime = new Date();
       rrIntervalBuffer.length = 0;
+      dataRecords = [];
       baselineRecords = [];
       baselineCalculated = false;
 
+      // Clear table
+      dataBody.innerHTML = '';
+
       // Setup baseline measurement
-      // read user-specified minutes
       const baselineMinutes = parseInt(baselineMinutesInput.value, 10) || 5;
       baselineRemainingSeconds = baselineMinutes * 60;
 
-      // Display baseline box
+      // Show baseline box
       baselineBox.style.display = 'inline-block';
       baselineResultsDiv.classList.add('hidden');
       updateBaselineStatus();
 
-      // Clear any previous interval
+      // Clear any previous timer
       if (baselineIntervalId) {
         clearInterval(baselineIntervalId);
       }
-      // Start countdown
+
+      // Start countdown for baseline
       baselineIntervalId = setInterval(() => {
         if (!isMeasuring) return; // if stopped, do not proceed
 
         baselineRemainingSeconds--;
         if (baselineRemainingSeconds <= 0 && !baselineCalculated) {
-          // Time is up for baseline measurement
           baselineRemainingSeconds = 0;
           calculateBaseline();
           baselineCalculated = true;
@@ -234,9 +240,15 @@
     });
 
     // ====================================
-    // 4. Reset
+    // 4. Reset (with confirmation)
     // ====================================
     resetButton.addEventListener('click', () => {
+      // Confirmation popup
+      const sure = window.confirm('Are you sure you want to reset all data? This cannot be undone.');
+      if (!sure) {
+        return; // user canceled, do nothing
+      }
+
       // Reset everything
       isMeasuring = false;
       measurementStartTime = null;
@@ -316,7 +328,7 @@
       const elapsedMs = now - measurementStartTime;
       const elapsedStr = formatElapsedTime(elapsedMs);
 
-      // New row data
+      // Insert to main table
       const newRowData = {
         dateTime: dateTimeString,
         elapsed: elapsedStr,
@@ -330,8 +342,9 @@
       dataRecords.push(newRowData);
       prependTableRow(newRowData);
 
-      // If baseline not yet calculated, store data for baseline
-      if (!baselineCalculated) {
+      // If baseline not yet calculated,
+      // skip the first 10 seconds from baseline measurement
+      if (!baselineCalculated && elapsedMs > BASELINE_SKIP_MS) {
         baselineRecords.push({
           bpm: bpm,
           sdnn: sdnn,
@@ -486,34 +499,49 @@
     }
 
     // ====================================
-    // Baseline calculation
+    // Baseline calculation (Median version)
     // ====================================
     function calculateBaseline() {
-      if (baselineRecords.length === 0) return;
+      // If no data, do nothing
+      if (baselineRecords.length === 0) {
+        baselineStatusElem.textContent = 'No baseline data collected';
+        return;
+      }
 
-      // Averages
-      const count = baselineRecords.length;
-      const sumBpm = baselineRecords.reduce((acc, v) => acc + v.bpm, 0);
-      const sumSdnn = baselineRecords.reduce((acc, v) => acc + v.sdnn, 0);
-      const sumRmssd = baselineRecords.reduce((acc, v) => acc + v.rmssd, 0);
-      const sumSdnnRmssd = baselineRecords.reduce((acc, v) => acc + v.sdnnRmssd, 0);
-      const sumLfHf = baselineRecords.reduce((acc, v) => acc + v.lfHf, 0);
+      // We will calculate median for each parameter.
+      // (If you prefer average, simply compute sum / count.)
+      const allBpm = baselineRecords.map(r => r.bpm);
+      const allSdnn = baselineRecords.map(r => r.sdnn);
+      const allRmssd = baselineRecords.map(r => r.rmssd);
+      const allSdnnRmssd = baselineRecords.map(r => r.sdnnRmssd);
+      const allLfHf = baselineRecords.map(r => r.lfHf);
 
-      const avgBpm = sumBpm / count;
-      const avgSdnn = sumSdnn / count;
-      const avgRmssd = sumRmssd / count;
-      const avgSdnnRmssd = sumSdnnRmssd / count;
-      const avgLfHf = sumLfHf / count;
+      const medianBpm = median(allBpm);
+      const medianSdnn = median(allSdnn);
+      const medianRmssd = median(allRmssd);
+      const medianSdnnRmssd = median(allSdnnRmssd);
+      const medianLfHf = median(allLfHf);
 
-      // Display results
+      baselineBpmElem.textContent = medianBpm.toFixed(2);
+      baselineSdnnElem.textContent = medianSdnn.toFixed(2);
+      baselineRmssdElem.textContent = medianRmssd.toFixed(2);
+      baselineSdnnRmssdElem.textContent = medianSdnnRmssd.toFixed(2);
+      baselineLfHfElem.textContent = medianLfHf.toFixed(2);
+
       baselineResultsDiv.classList.remove('hidden');
-      baselineBpmElem.textContent = avgBpm.toFixed(2);
-      baselineSdnnElem.textContent = avgSdnn.toFixed(2);
-      baselineRmssdElem.textContent = avgRmssd.toFixed(2);
-      baselineSdnnRmssdElem.textContent = avgSdnnRmssd.toFixed(2);
-      baselineLfHfElem.textContent = avgLfHf.toFixed(2);
-
       baselineStatusElem.textContent = 'Baseline measurement completed';
+    }
+
+    // Utility function to compute median
+    function median(arr) {
+      if (arr.length === 0) return 0;
+      const sorted = [...arr].sort((a,b)=>a-b);
+      const mid = Math.floor(sorted.length / 2);
+      if (sorted.length % 2 === 0) {
+        return (sorted[mid - 1] + sorted[mid]) / 2;
+      } else {
+        return sorted[mid];
+      }
     }
 
     // ====================================
@@ -521,7 +549,6 @@
     // ====================================
     function updateBaselineStatus() {
       if (baselineCalculated) {
-        // Already done
         baselineStatusElem.textContent = 'Baseline measurement completed';
         return;
       }
@@ -548,7 +575,6 @@
       downloadBlob(csvContent, mainFileName);
 
       // 2) Baseline results CSV
-      // If baseline not completed, note that in the file
       let baselineCsv = 'Parameter,Value\n';
       if (!baselineCalculated) {
         baselineCsv += 'Baseline not completed,No data\n';
