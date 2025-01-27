@@ -23,7 +23,7 @@
       border: 1px solid #ccc;
       padding: 8px;
       text-align: left;
-      font-size: 14px; /* smaller font */
+      font-size: 14px; /* smaller font for results */
     }
     #dataTable th {
       background-color: #f2f2f2;
@@ -50,11 +50,46 @@
     .small-text {
       font-size: 14px;
     }
+
+    /* Accordion style */
+    .accordion {
+      margin: 10px 0;
+    }
+    .accordion-button {
+      background-color: #ddd;
+      border: none;
+      cursor: pointer;
+      padding: 10px;
+      width: 100%;
+      text-align: left;
+      outline: none;
+      font-size: 16px;
+      transition: background-color 0.2s ease;
+      margin-bottom: 5px;
+    }
+    .accordion-button:hover {
+      background-color: #ccc;
+    }
+    .accordion-content {
+      padding: 10px;
+      background-color: #f9f9f9;
+      border: 1px solid #ddd;
+      display: none; /* hidden by default */
+    }
+
+    /* Colors for highlight (light red / light blue) */
+    .highlight-red {
+      background-color: #ffd7d7; /* or something light red */
+    }
+    .highlight-blue {
+      background-color: #d7e5ff; /* or something light blue */
+    }
   </style>
 </head>
 <body>
   <h1>Polar H10 HRV Monitor</h1>
 
+  <!-- Button area -->
   <div class="flex-buttons">
     <button id="connectButton">Connect to Polar H10</button>
     <label for="baselineMinutes" style="margin-left: 20px;">
@@ -68,10 +103,13 @@
     <button id="stopButton" disabled>Stop Measurement</button>
     <button id="resetButton">Reset</button>
     <button id="downloadButton" disabled>Download</button>
+    <button id="toggleHighlightButton" disabled>Toggle Highlight</button>
   </div>
 
+  <!-- Status text -->
   <div class="status" id="status">Not connected</div>
   
+  <!-- Baseline box -->
   <div class="baseline-box" id="baselineBox" style="display: none;">
     <strong id="baselineStatus">Baseline not started</strong><br>
     <div id="baselineResults" class="small-text hidden">
@@ -84,6 +122,25 @@
     </div>
   </div>
 
+  <!-- Accordion for explanation -->
+  <div class="accordion">
+    <button class="accordion-button" id="toggleExplanation">Show/Hide Explanation</button>
+    <div class="accordion-content" id="explanationContent">
+      <p>
+        <strong>Color Highlight Rules:</strong><br>
+        <ul>
+          <li><strong>SDNN (ms)</strong> is red if it's < baseline, and blue if > baseline.</li>
+          <li><strong>RMSSD (ms)</strong> is red if it's < baseline, and blue if > baseline.</li>
+          <li><strong>SDNN/RMSSD</strong> is red if it's > baseline, and blue if < baseline.</li>
+          <li><strong>LF/HF</strong> is red if it's > baseline, and blue if < baseline.</li>
+        </ul>
+        In other words, if the device wearer's "arousal" or "alertness" is higher than the baseline,
+        the cell turns red. If it's lower than baseline, the cell turns blue.
+      </p>
+    </div>
+  </div>
+
+  <!-- Data Table -->
   <table id="dataTable">
     <thead>
       <tr>
@@ -102,35 +159,35 @@
   </table>
 
   <script>
-    // ====================================
+    // ---------- JavaScript code starts here ----------
     // Global variables
-    // ====================================
     let heartRateCharacteristic = null;
     let device = null;
 
-    // RR intervals (ms)
     const rrIntervalBuffer = [];
-
-    // Table records
-    // { dateTime, elapsed, bpm, sdnn, rmssd, sdnnRmssd, lfHf }
     let dataRecords = [];
 
-    // Measurement start time
     let measurementStartTime = null;
-
-    // Flags
     let isMeasuring = false;
     let baselineCalculated = false;
 
-    // Baseline
-    let baselineRecords = []; // store data for baseline
-    let baselineIntervalId = null; // for the countdown timer
+    // For baseline
+    let baselineRecords = [];
+    let baselineIntervalId = null;
     let baselineRemainingSeconds = 0;
+    const BASELINE_SKIP_MS = 10000; // skip first 10 seconds
 
-    // We'll skip the first 10 seconds from baseline measurement
-    const BASELINE_SKIP_MS = 10000;
+    // We will store the final baseline values (Median) here after calculation
+    let baselineBpmVal = 0;
+    let baselineSdnnVal = 0;
+    let baselineRmssdVal = 0;
+    let baselineSdnnRmssdVal = 0;
+    let baselineLfHfVal = 0;
 
-    // Elements
+    // Color highlighting on/off
+    let highlightEnabled = false;
+
+    // HTML elements
     const statusElem = document.getElementById('status');
     const dataBody = document.getElementById('dataBody');
     const connectButton = document.getElementById('connectButton');
@@ -138,7 +195,8 @@
     const stopButton = document.getElementById('stopButton');
     const resetButton = document.getElementById('resetButton');
     const downloadButton = document.getElementById('downloadButton');
-    
+    const toggleHighlightButton = document.getElementById('toggleHighlightButton');
+
     const baselineBox = document.getElementById('baselineBox');
     const baselineStatusElem = document.getElementById('baselineStatus');
     const baselineResultsDiv = document.getElementById('baselineResults');
@@ -149,6 +207,10 @@
     const baselineLfHfElem = document.getElementById('baselineLfHf');
 
     const baselineMinutesInput = document.getElementById('baselineMinutes');
+
+    // Accordion elements
+    const toggleExplanation = document.getElementById('toggleExplanation');
+    const explanationContent = document.getElementById('explanationContent');
 
     // ====================================
     // 1. Connect to Polar H10
@@ -185,7 +247,6 @@
         alert('Please connect to Polar H10 first.');
         return;
       }
-      // Reset flags / data for new measurement
       isMeasuring = true;
       measurementStartTime = new Date();
       rrIntervalBuffer.length = 0;
@@ -200,19 +261,15 @@
       const baselineMinutes = parseInt(baselineMinutesInput.value, 10) || 5;
       baselineRemainingSeconds = baselineMinutes * 60;
 
-      // Show baseline box
       baselineBox.style.display = 'inline-block';
       baselineResultsDiv.classList.add('hidden');
       updateBaselineStatus();
 
-      // Clear any previous timer
       if (baselineIntervalId) {
         clearInterval(baselineIntervalId);
       }
-
-      // Start countdown for baseline
       baselineIntervalId = setInterval(() => {
-        if (!isMeasuring) return; // if stopped, do not proceed
+        if (!isMeasuring) return;
 
         baselineRemainingSeconds--;
         if (baselineRemainingSeconds <= 0 && !baselineCalculated) {
@@ -225,6 +282,7 @@
 
       statusElem.textContent = 'Measurement started.';
       downloadButton.disabled = true;
+      toggleHighlightButton.disabled = true; // highlight toggling only possible after baseline calc
     });
 
     // ====================================
@@ -243,10 +301,9 @@
     // 4. Reset (with confirmation)
     // ====================================
     resetButton.addEventListener('click', () => {
-      // Confirmation popup
       const sure = window.confirm('Are you sure you want to reset all data? This cannot be undone.');
       if (!sure) {
-        return; // user canceled, do nothing
+        return; // user canceled
       }
 
       // Reset everything
@@ -257,12 +314,18 @@
       baselineRecords = [];
       baselineCalculated = false;
 
-      // Stop countdown
       if (baselineIntervalId) {
         clearInterval(baselineIntervalId);
         baselineIntervalId = null;
       }
       baselineRemainingSeconds = 0;
+
+      // Clear baseline values
+      baselineBpmVal = 0;
+      baselineSdnnVal = 0;
+      baselineRmssdVal = 0;
+      baselineSdnnRmssdVal = 0;
+      baselineLfHfVal = 0;
 
       // Clear table
       dataBody.innerHTML = '';
@@ -275,6 +338,8 @@
       // Buttons / status
       statusElem.textContent = 'Reset completed. (Connect again if needed)';
       downloadButton.disabled = true;
+      toggleHighlightButton.disabled = true;
+      highlightEnabled = false;
     });
 
     // ====================================
@@ -297,38 +362,31 @@
         index += 1;
       }
 
-      // If RR-Interval flag (0x10) is set
+      // RR-Interval flag
       const rrFlag = flags & 0x10;
       let rrIntervals = [];
       if (rrFlag) {
-        // each RR interval is in 1/1024 sec
         for (; index < value.byteLength; index += 2) {
           const rr = value.getUint16(index, true);
-          rrIntervals.push(rr * 1000.0 / 1024.0); // convert to ms
+          rrIntervals.push(rr * 1000.0 / 1024.0);
         }
       }
 
-      // Push new intervals
       rrIntervals.forEach(rr => rrIntervalBuffer.push(rr));
-      // Trim if too large
       if (rrIntervalBuffer.length > 300) {
         rrIntervalBuffer.splice(0, rrIntervalBuffer.length - 300);
       }
 
-      // Calculate HRV indexes
+      // HRV calculations
       const { sdnn, rmssd } = calculateTimeDomainHRV(rrIntervalBuffer);
       const lfHf = calculateLFHFRatio(rrIntervalBuffer);
       const sdnnRmssd = rmssd === 0 ? 0 : sdnn / rmssd;
 
-      // Date/Time
       const now = new Date();
       const dateTimeString = formatDateTime(now);
-
-      // Elapsed
       const elapsedMs = now - measurementStartTime;
       const elapsedStr = formatElapsedTime(elapsedMs);
 
-      // Insert to main table
       const newRowData = {
         dateTime: dateTimeString,
         elapsed: elapsedStr,
@@ -342,8 +400,7 @@
       dataRecords.push(newRowData);
       prependTableRow(newRowData);
 
-      // If baseline not yet calculated,
-      // skip the first 10 seconds from baseline measurement
+      // Baseline data, skip first 10s
       if (!baselineCalculated && elapsedMs > BASELINE_SKIP_MS) {
         baselineRecords.push({
           bpm: bpm,
@@ -354,7 +411,7 @@
         });
       }
 
-      // Enable download if we have at least one record
+      // Enable download if we have data
       downloadButton.disabled = dataRecords.length === 0;
     }
 
@@ -364,6 +421,7 @@
     function prependTableRow(rowData) {
       const newRow = document.createElement('tr');
 
+      // create cells
       const dateTimeCell = document.createElement('td');
       dateTimeCell.textContent = rowData.dateTime;
 
@@ -385,6 +443,14 @@
       const lfHfCell = document.createElement('td');
       lfHfCell.textContent = rowData.lfHf;
 
+      // If highlight is enabled AND baseline is calculated, apply color
+      if (highlightEnabled && baselineCalculated) {
+        applyHighlight(sdnnCell, parseFloat(rowData.sdnn), baselineSdnnVal, 'sdnn');
+        applyHighlight(rmssdCell, parseFloat(rowData.rmssd), baselineRmssdVal, 'rmssd');
+        applyHighlight(sdnnRmssdCell, parseFloat(rowData.sdnnRmssd), baselineSdnnRmssdVal, 'sdnnRmssd');
+        applyHighlight(lfHfCell, parseFloat(rowData.lfHf), baselineLfHfVal, 'lfHf');
+      }
+
       newRow.appendChild(dateTimeCell);
       newRow.appendChild(elapsedCell);
       newRow.appendChild(bpmCell);
@@ -398,6 +464,32 @@
       } else {
         dataBody.appendChild(newRow);
       }
+    }
+
+    // ====================================
+    // Apply highlight color to a cell
+    // ====================================
+    // According to the rule:
+    // - SDNN, RMSSD: actual < baseline => red, actual > baseline => blue
+    // - SDNN/RMSSD, LF/HF: actual > baseline => red, actual < baseline => blue
+    function applyHighlight(cell, actualValue, baselineValue, paramType) {
+      // Clear any existing highlight
+      cell.classList.remove('highlight-red', 'highlight-blue');
+
+      if (paramType === 'sdnn' || paramType === 'rmssd') {
+        if (actualValue < baselineValue) {
+          cell.classList.add('highlight-red');
+        } else if (actualValue > baselineValue) {
+          cell.classList.add('highlight-blue');
+        }
+      } else if (paramType === 'sdnnRmssd' || paramType === 'lfHf') {
+        if (actualValue > baselineValue) {
+          cell.classList.add('highlight-red');
+        } else if (actualValue < baselineValue) {
+          cell.classList.add('highlight-blue');
+        }
+      }
+      // If actual == baseline, no color
     }
 
     // ====================================
@@ -502,14 +594,11 @@
     // Baseline calculation (Median version)
     // ====================================
     function calculateBaseline() {
-      // If no data, do nothing
       if (baselineRecords.length === 0) {
         baselineStatusElem.textContent = 'No baseline data collected';
         return;
       }
 
-      // We will calculate median for each parameter.
-      // (If you prefer average, simply compute sum / count.)
       const allBpm = baselineRecords.map(r => r.bpm);
       const allSdnn = baselineRecords.map(r => r.sdnn);
       const allRmssd = baselineRecords.map(r => r.rmssd);
@@ -522,6 +611,14 @@
       const medianSdnnRmssd = median(allSdnnRmssd);
       const medianLfHf = median(allLfHf);
 
+      // Store to global
+      baselineBpmVal = medianBpm;
+      baselineSdnnVal = medianSdnn;
+      baselineRmssdVal = medianRmssd;
+      baselineSdnnRmssdVal = medianSdnnRmssd;
+      baselineLfHfVal = medianLfHf;
+
+      // UI
       baselineBpmElem.textContent = medianBpm.toFixed(2);
       baselineSdnnElem.textContent = medianSdnn.toFixed(2);
       baselineRmssdElem.textContent = medianRmssd.toFixed(2);
@@ -530,6 +627,9 @@
 
       baselineResultsDiv.classList.remove('hidden');
       baselineStatusElem.textContent = 'Baseline measurement completed';
+
+      // Now we can enable the "Toggle Highlight" button
+      toggleHighlightButton.disabled = false;
     }
 
     // Utility function to compute median
@@ -616,7 +716,6 @@
       return `${yyyy}/${mm}/${dd} ${hh}:${min}:${sec}`;
     }
 
-    // For file names: YYYYMMDD_HHMMSS
     function formatDateTimeForFileName(date) {
       const yyyy = date.getFullYear();
       const mm = String(date.getMonth() + 1).padStart(2, '0');
@@ -627,13 +726,64 @@
       return `${yyyy}${mm}${dd}_${hh}${min}${sec}`;
     }
 
-    // Format elapsed time (ms -> min:sec)
     function formatElapsedTime(ms) {
       const totalSec = Math.floor(ms / 1000);
       const min = Math.floor(totalSec / 60);
       const sec = totalSec % 60;
       return `${min}:${String(sec).padStart(2, '0')}`;
     }
+
+    // ====================================
+    // 7. Toggle color highlighting
+    // ====================================
+    toggleHighlightButton.addEventListener('click', () => {
+      // Flip the state
+      highlightEnabled = !highlightEnabled;
+
+      // Re-apply color or remove color from existing table rows
+      // We only color if baseline is calculated & highlightEnabled = true
+      const rows = dataBody.querySelectorAll('tr');
+      rows.forEach((row) => {
+        const cells = row.querySelectorAll('td');
+        // order: [ DateTime, Elapsed, BPM, SDNN, RMSSD, SDNN/RMSSD, LF/HF ]
+        if (cells.length === 7) {
+          const sdnnCell = cells[3];
+          const rmssdCell = cells[4];
+          const sdnnRmssdCell = cells[5];
+          const lfHfCell = cells[6];
+
+          // remove any highlight classes
+          sdnnCell.classList.remove('highlight-red','highlight-blue');
+          rmssdCell.classList.remove('highlight-red','highlight-blue');
+          sdnnRmssdCell.classList.remove('highlight-red','highlight-blue');
+          lfHfCell.classList.remove('highlight-red','highlight-blue');
+
+          if (highlightEnabled && baselineCalculated) {
+            const sdnnVal = parseFloat(sdnnCell.textContent);
+            const rmssdVal = parseFloat(rmssdCell.textContent);
+            const sdnnRmssdVal2 = parseFloat(sdnnRmssdCell.textContent);
+            const lfHfVal2 = parseFloat(lfHfCell.textContent);
+
+            applyHighlight(sdnnCell, sdnnVal, baselineSdnnVal, 'sdnn');
+            applyHighlight(rmssdCell, rmssdVal, baselineRmssdVal, 'rmssd');
+            applyHighlight(sdnnRmssdCell, sdnnRmssdVal2, baselineSdnnRmssdVal, 'sdnnRmssd');
+            applyHighlight(lfHfCell, lfHfVal2, baselineLfHfVal, 'lfHf');
+          }
+        }
+      });
+    });
+
+    // ====================================
+    // 8. Accordion (Show/Hide Explanation)
+    // ====================================
+    toggleExplanation.addEventListener('click', () => {
+      if (explanationContent.style.display === 'none') {
+        explanationContent.style.display = 'block';
+      } else {
+        explanationContent.style.display = 'none';
+      }
+    });
+
   </script>
 </body>
 </html>
