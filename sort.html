@@ -5,17 +5,14 @@
   <title>HRV & Affective Merger</title>
   <!-- Papa Parse (CSV解析) -->
   <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
-  <!-- Chart.js (グラフ描画) -- 不要なら削除OK
-  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-  -->
-  <!-- simple-statistics (t検定など) -- 必要なければ削除OK
-  <script src="https://cdn.jsdelivr.net/npm/simple-statistics@7.7.2/dist/simple-statistics.min.js"></script>
-  -->
   <!-- SheetJS (Excelファイル作成) -->
   <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 
   <style>
-    body { font-family: sans-serif; margin: 20px; }
+    body {
+      font-family: sans-serif; 
+      margin: 20px;
+    }
     .uploader {
       border: 2px dashed #ccc;
       padding: 20px;
@@ -30,10 +27,40 @@
     button {
       margin: 5px;
     }
+    /* ローディングスピナーのスタイル */
+    #loader {
+      display: none; /* 最初は非表示 */
+      position: fixed;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      font-size: 2rem;
+      text-align: center;
+    }
+    /* 簡易CSSアニメーション (くるくる) */
+    .spinner {
+      border: 8px solid #f3f3f3; 
+      border-top: 8px solid #3498db; 
+      border-radius: 50%;
+      width: 60px;
+      height: 60px;
+      animation: spin 1s linear infinite;
+      margin: 0 auto;
+    }
+    @keyframes spin {
+      0%   { transform: rotate(0deg); }
+      100% { transform: rotate(360deg); }
+    }
   </style>
 </head>
 <body>
   <h1>HRV & Affective Merger</h1>
+
+  <!-- ローディング中のスピナー -->
+  <div id="loader">
+    <div class="spinner"></div>
+    <p>読み込み中...</p>
+  </div>
 
   <div class="uploader" id="dropzone">
     <p>ここにCSVファイルをドラッグ＆ドロップ</p>
@@ -48,6 +75,7 @@
 
   <div id="message"></div>
 
+  <!-- メインスクリプト -->
   <script src="js/sort.js"></script>
 </body>
 </html>
