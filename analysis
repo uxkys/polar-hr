@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <title>HRV & Affective Data Analyzer</title>
+  <!-- 必要ライブラリのCDN読み込み -->
+  <!-- Papa Parse (CSV解析) -->
+  <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
+  <!-- Chart.js (グラフ描画) -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <!-- simple-statistics (統計解析: t検定など) -->
+  <script src="https://cdn.jsdelivr.net/npm/simple-statistics@7.7.2/dist/simple-statistics.min.js"></script>
+  <style>
+    body {
+      font-family: sans-serif;
+      margin: 20px;
+    }
+    .uploader {
+      border: 2px dashed #ccc;
+      padding: 20px;
+      margin-bottom: 20px;
+    }
+    .interval-inputs {
+      margin-top: 20px;
+      background: #f9f9f9;
+      padding: 10px;
+      border: 1px solid #ddd;
+    }
+    canvas {
+      max-width: 600px;
+      margin: 20px 0;
+    }
+    .hidden {
+      display: none;
+    }
+  </style>
+</head>
+<body>
+  <h1>HRV & Affective Data Analyzer</h1>
+
+  <!-- CSVアップロード -->
+  <div class="uploader" id="dropzone">
+    <p>ここにCSVファイルをドラッグ＆ドロップ</p>
+    <p>または<input type="file" id="fileInput" multiple /></p>
+  </div>
+
+  <!-- 結果表示エリア -->
+  <div id="results"></div>
+
+  <!-- HRVグラフ -->
+  <canvas id="hrvChart"></canvas>
+
+  <!-- Affectiveグラフ -->
+  <canvas id="affectiveChart"></canvas>
+
+  <!-- 区間指定＆有意差検定パネル -->
+  <div class="interval-inputs" id="intervalPanel" class="hidden">
+    <h2>区間比較 (HRV指標の有意差検定)</h2>
+    <p>
+      開始時刻・終了時刻を "YYYY/MM/DD HH:MM:SS" または "HH:MM:SS" 形式で入力し、<br>
+      2つの区間で SDNN, RMSSD などの差が有意かどうか t検定します。<br>
+      ※実装例につき動作の正確性は適宜ご確認ください。
+    </p>
+    <div>
+      <h3>区間1</h3>
+      <label>開始時刻: <input type="text" id="startTime1" placeholder="10:30:45" /></label>
+      <label>終了時刻: <input type="text" id="endTime1" placeholder="10:31:00" /></label>
+    </div>
+    <div>
+      <h3>区間2</h3>
+      <label>開始時刻: <input type="text" id="startTime2" placeholder="10:31:01" /></label>
+      <label>終了時刻: <input type="text" id="endTime2" placeholder="10:31:15" /></label>
+    </div>
+    <button id="compareBtn">有意差検定を実行</button>
+    <div id="analysisResult"></div>
+  </div>
+
+  <!-- メインのスクリプト -->
+  <script src="js/analysis.js"></script>
+</body>
+</html>
