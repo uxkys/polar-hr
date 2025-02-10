@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <title>HRV & Affective Merger</title>
+  <!-- Papa Parse (CSV解析) -->
+  <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
+  <!-- Chart.js (グラフ描画) -- 不要なら削除OK
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  -->
+  <!-- simple-statistics (t検定など) -- 必要なければ削除OK
+  <script src="https://cdn.jsdelivr.net/npm/simple-statistics@7.7.2/dist/simple-statistics.min.js"></script>
+  -->
+  <!-- SheetJS (Excelファイル作成) -->
+  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+
+  <style>
+    body { font-family: sans-serif; margin: 20px; }
+    .uploader {
+      border: 2px dashed #ccc;
+      padding: 20px;
+      margin-bottom: 20px;
+    }
+    .file-info {
+      background: #f9f9f9;
+      margin: 10px 0;
+      padding: 10px;
+      border: 1px solid #ddd;
+    }
+    button {
+      margin: 5px;
+    }
+  </style>
+</head>
+<body>
+  <h1>HRV & Affective Merger</h1>
+
+  <div class="uploader" id="dropzone">
+    <p>ここにCSVファイルをドラッグ＆ドロップ</p>
+    <p>または<input type="file" id="fileInput" multiple /></p>
+  </div>
+
+  <div id="fileList"></div>
+
+  <!-- マージ結果ダウンロード用のボタン -->
+  <button id="mergeCsvBtn" disabled>マージしたCSVをダウンロード</button>
+  <button id="mergeXlsxBtn" disabled>マージしたExcelをダウンロード</button>
+
+  <div id="message"></div>
+
+  <script src="js/app.js"></script>
+</body>
+</html>
